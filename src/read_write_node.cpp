@@ -23,7 +23,7 @@
 
 #include "dynamixel_sdk.h"  // Uses dynamixel library
 
-#define X_SERIES // X330, X430, X540, 2X430
+#define X_SERIES
 
 // Control table address
 #define ADDR_TORQUE_ENABLE          64
@@ -33,10 +33,10 @@
 #define MAXIMUM_POSITION_LIMIT      4095  // Refer to the Maximum Position Limit
 #define BAUDRATE                    1000000
 
-// used data transfer protocol
+// Used data transfer protocol
 #define PROTOCOL_VERSION  2.0
 
-// default id
+// Default id, is then adopted for the different motors
 #define DXL_ID  1
 
 // Use the actual port assigned 
@@ -47,6 +47,7 @@
 #define DXL_MOVING_STATUS_THRESHOLD     20  // DYNAMIXEL moving status threshold
 #define ESC_ASCII_VALUE                 0x1b
 
+// Zero positions for the used motors
 #define ZERO_POSITION_2 0
 #define ZERO_POSITION_3 2587
 #define ZERO_POSITION_4 2060
@@ -76,45 +77,51 @@ int getch() {
 #endif
 }
 
-int kbhit(void) {
+int kbhit(void) 
+{
 #if defined(__linux__) || defined(__APPLE__)
-  struct termios oldt, newt;
-  int ch;
-  int oldf;
+    struct termios oldt, newt;
+    int ch;
+    int oldf;
 
-  tcgetattr(STDIN_FILENO, &oldt);
-  newt = oldt;
-  newt.c_lflag &= ~(ICANON | ECHO);
-  tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-  oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
-  fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
 
-  ch = getchar();
+    ch = getchar();
 
-  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-  fcntl(STDIN_FILENO, F_SETFL, oldf);
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    fcntl(STDIN_FILENO, F_SETFL, oldf);
 
-  if (ch != EOF) {
-    ungetc(ch, stdin);
-    return 1;
-  }
+    if (ch != EOF) 
+    {
+        ungetc(ch, stdin);
+        return 1;
+    }
 
-  return 0;
+    return 0;
 #elif defined(_WIN32) || defined(_WIN64)
-  return _kbhit();
+    return _kbhit();
 #endif
 }
 
-// array with all zero positions to iterate over
+// Array with all zero positions to iterate over
 const int16_t ZERO_POSITION[] = {ZERO_POSITION_2, ZERO_POSITION_3, ZERO_POSITION_4, ZERO_POSITION_5, ZERO_POSITION_6, ZERO_POSITION_7};
 
+// To be used in forked thread for waiting on keypress
 std::atomic<bool> running(true);
 
-void waitForKeyPress() {
+// Outsourced funcitons for cleaner structure and reusability
+void waitForKeyPress() 
+{
     std::cin.get(); // Wait for a key press
     running = false; // Set running to false when a key is pressed
 }
 
+// Normalizing (shifting) the angle around zero so between -pi and pi
 double normalize_angle(double angle)
 {
     while (angle>M_PI)
@@ -128,14 +135,17 @@ double normalize_angle(double angle)
     return angle;
 }
 
+// For pusblishing the motor configurations on the ros topic
 void publish_joint_angles(dynamixel::PortHandler* portHandler,
                           dynamixel::PacketHandler* packetHandler,
                           ros::Publisher& pub,
                           sensor_msgs::JointState& joint_state_msg,
                           uint8_t& dxl_error)
 {
-    uint16_t dxl_present_positions[6]; // Array to hold the positions of 6 joints
-    for (int i = 0; i < 6; ++i) {
+    // Array to hold the positions of 6 joints
+    uint16_t dxl_present_positions[6]; 
+    for (int i = 0; i < 6; ++i) 
+    {
         int dxl_comm_result = packetHandler->read2ByteTxRx(portHandler, i + 2, ADDR_PRESENT_POSITION, &dxl_present_positions[i], &dxl_error);
     }
 
@@ -145,6 +155,7 @@ void publish_joint_angles(dynamixel::PortHandler* portHandler,
     // Clear the previous positions and add the new ones
     joint_state_msg.position.clear(); // Clear previous positions
     
+    // Converting the measured angle to rad, normalizing it and inserting it into the correct position to be published
     joint_state_msg.position.push_back(normalize_angle(static_cast<double>((dxl_present_positions[4] - ZERO_POSITION_6) % 4096) * (2 * M_PI / 4096)));
     joint_state_msg.position.push_back(normalize_angle(static_cast<double>((dxl_present_positions[2] - ZERO_POSITION_4) % 4096) * (2 * M_PI / 4096)));
     joint_state_msg.position.push_back(normalize_angle(static_cast<double>((dxl_present_positions[1] - ZERO_POSITION_3) % 4096) * (2 * M_PI / 4096)));
@@ -152,57 +163,66 @@ void publish_joint_angles(dynamixel::PortHandler* portHandler,
     joint_state_msg.position.push_back(normalize_angle(static_cast<double>((dxl_present_positions[3] - ZERO_POSITION_5) % 4096) * (2 * M_PI / 4096)));
     joint_state_msg.position.push_back(normalize_angle(static_cast<double>((dxl_present_positions[0] - ZERO_POSITION_2) % 4096) * (2 * M_PI / 4096)));
 
+    // publish the array with positions
     pub.publish(joint_state_msg);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) 
+{
+    // Setup connection to ros node and encoders
     
-  ros::init(argc, argv, "dynamixel_read_node");
-  ros::NodeHandle nh;
-  ros::Publisher pub = nh.advertise<sensor_msgs::JointState>("dynamixel_joint_states",10);
-  ros::Rate loop_rate(10);
-  // Initialize PortHandler instance
-  // Set the port path
-  // Get methods and members of PortHandlerLinux or PortHandlerWindows
-  dynamixel::PortHandler *portHandler = dynamixel::PortHandler::getPortHandler(DEVICENAME);
+    ros::init(argc, argv, "dynamixel_read_node");
+    ros::NodeHandle nh;
+    ros::Publisher pub = nh.advertise<sensor_msgs::JointState>("dynamixel_joint_states",10);
+    // Bound by read and write speed of the registers
+    ros::Rate loop_rate(10);
+    // Initialize PortHandler instance
+    // Set the port path
+    // Get methods and members of PortHandlerLinux or PortHandlerWindows
+    dynamixel::PortHandler *portHandler = dynamixel::PortHandler::getPortHandler(DEVICENAME);
 
-  // Initialize PacketHandler instance
-  // Set the protocol version
-  // Get methods and members of Protocol1PacketHandler or Protocol2PacketHandler
-  dynamixel::PacketHandler *packetHandler = dynamixel::PacketHandler::getPacketHandler(PROTOCOL_VERSION);
+    // Initialize PacketHandler instance
+    // Set the protocol version
+    // Get methods and members of Protocol1PacketHandler or Protocol2PacketHandler
+    dynamixel::PacketHandler *packetHandler = dynamixel::PacketHandler::getPacketHandler(PROTOCOL_VERSION);
 
-  int index = 0;
-  int dxl_comm_result = COMM_TX_FAIL;             // Communication result
-  int dxl_goal_position[2] = {MINIMUM_POSITION_LIMIT, MAXIMUM_POSITION_LIMIT};         // Goal position
+    int index = 0;
+    int dxl_comm_result = COMM_TX_FAIL;             // Communication result
+    int dxl_goal_position[2] = {MINIMUM_POSITION_LIMIT, MAXIMUM_POSITION_LIMIT};         // Goal position
 
-  uint8_t dxl_error = 0;                          // DYNAMIXEL error
-  #if defined(XL320)
-  int16_t dxl_present_position = 0;  // XL-320 uses 2 byte Position data
-  #else
-  int32_t dxl_present_position = 0;  // Read 4 byte Position data
-  #endif
+    // Different variable sizes for different used registers
+    uint8_t dxl_error = 0; // DYNAMIXEL error
+    #if defined(XL320)
+    int16_t dxl_present_position = 0;  // XL-320 uses 2 byte Position data
+    #else
+    int32_t dxl_present_position = 0;  // Read 4 byte Position data
+    #endif
 
-  // Open port
-  if (portHandler->openPort()) {
-    printf("Succeeded to open the port!\n");
-  }
-  else {
-    printf("Failed to open the port!\n");
-    printf("Press any key to terminate...\n");
-    getch();
-    return 0;
-  }
+    // Open port
+    if (portHandler->openPort()) 
+    {
+        printf("Succeeded to open the port!\n");
+    }
+    else 
+    {
+        printf("Failed to open the port!\n");
+        printf("Press any key to terminate...\n");
+        getch();
+        return 0;
+    }
 
-  // Set port baudrate
-  if (portHandler->setBaudRate(BAUDRATE)) {
-    printf("Succeeded to change the baudrate!\n");
-  }
-  else {
-    printf("Failed to change the baudrate!\n");
-    printf("Press any key to terminate...\n");
-    getch();
-    return 0;
-  }
+    // Set port baudrate
+    if (portHandler->setBaudRate(BAUDRATE)) 
+    {
+        printf("Succeeded to change the baudrate!\n");
+    }
+    else 
+    {
+        printf("Failed to change the baudrate!\n");
+        printf("Press any key to terminate...\n");
+        getch();
+        return 0;
+    }
     
     // create jont_state_msg to publish the joint state
     sensor_msgs::JointState joint_state_msg;
@@ -213,34 +233,40 @@ int main(int argc, char **argv) {
     joint_state_msg.name.push_back("joint5");
     joint_state_msg.name.push_back("joint6");
     
+    // Start the alignment
     ROS_INFO("Press any key to start (Align master to zero).\n");
     if (getch() == ESC_ASCII_VALUE);
     
-    // activate position control
-    for (int i = 0; i < 6; ++i) {
+    // Activate position control
+    for (int i = 0; i < 6; ++i) 
+    {
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_TORQUE_ENABLE, TORQUE_DISABLE, &dxl_error);
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_PRO_CONTROL_MODE,3, &dxl_error);
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_TORQUE_ENABLE, TORQUE_ENABLE, &dxl_error);
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_PRO_CONTROL_MODE,3, &dxl_error);
     }
     
-    // set max velocity
+    // Set max velocity
     dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, 2, ADDR_PRO_PROFILE_VELOCITY, 10000, &dxl_error);
-    for (int i = 1; i < 6; ++i) {
+    for (int i = 1; i < 6; ++i) 
+    {
         dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, i+2, ADDR_PRO_PROFILE_VELOCITY, 50, &dxl_error);
     }
     
-    // set max acceleration
+    // Set max acceleration
     dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, 2, ADDR_PRO_PROFILE_ACCELERATION, 100, &dxl_error);
-    for (int i = 1; i < 6; ++i) {
+    for (int i = 1; i < 6; ++i) 
+    {
         dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, i+2, ADDR_PRO_PROFILE_ACCELERATION, 20, &dxl_error);
     }
     
-    // go to zero position
-    for (int i = 0; i < 6; ++i) {
+    // Go to zero position
+    for (int i = 0; i < 6; ++i) 
+    {
         dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, i+2,ADDR_GOAL_POSITION , ZERO_POSITION[i], &dxl_error);
     }
     
+    // Start reading from registers
     ROS_INFO("Press any key to contiue with recordig joint configurations.\n");
     if (getch() == ESC_ASCII_VALUE);
     
@@ -248,8 +274,11 @@ int main(int argc, char **argv) {
     
     ROS_INFO("Press any key to contiue with gravity compensation (Hold the arm).\n");
     
-    while (running) { // Loop until running is false
-        for (int i = 0; i < 6; ++i) {
+    // Loop until running is false, to wait for a keyboard input and read data meanwhile
+    while (running) 
+    { 
+        for (int i = 0; i < 6; ++i) 
+        {
             dxl_comm_result = packetHandler->write4ByteTxRx(portHandler, i+2,ADDR_GOAL_POSITION , ZERO_POSITION[i], &dxl_error);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Sleep for 10 ms
@@ -259,7 +288,8 @@ int main(int argc, char **argv) {
     keyPressThread.join(); // Wait for the key press thread to finish
     
     // activate position control
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 6; ++i)
+    {
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_TORQUE_ENABLE, TORQUE_DISABLE, &dxl_error);
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_PRO_CONTROL_MODE,0, &dxl_error);
         dxl_comm_result = packetHandler->write1ByteTxRx(portHandler, i+2, ADDR_TORQUE_ENABLE, TORQUE_ENABLE, &dxl_error);
@@ -278,9 +308,9 @@ int main(int argc, char **argv) {
     while (ros::ok())
     {
         ros::Time start_time = ros::Time::now();
-        
+
         ros::spinOnce();
-        
+
         // publish joint angles
         publish_joint_angles(portHandler, packetHandler, pub, joint_state_msg, dxl_error);
 
@@ -289,7 +319,7 @@ int main(int argc, char **argv) {
         loop_rate.sleep();
     }
 
-  // Close port
-  portHandler->closePort();
-  return 0;
+    // Close port
+    portHandler->closePort();
+    return 0;
 }
