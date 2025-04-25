@@ -16,7 +16,7 @@ git clone https://github.com/medar6/encoder_register_read_write_node
 ```
 cd encoder_register_read_write_node
 ```
-- use *catkin_make* (will throw error as libraries are missing)
+- use *catkin_make* (will currently throw an error as libraries are missing)
 ```
 catkin_make
 ```
